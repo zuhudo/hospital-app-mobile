@@ -1,0 +1,166 @@
+name: Mobile Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  # ──────────────────────────────────────────────
+  # Android Build
+  # ──────────────────────────────────────────────
+  build-android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+      - name: Build APK
+        run: flutter build apk --release
+
+      - name: Build App Bundle (AAB)
+        run: flutter build appbundle --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload AAB
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+
+  # ──────────────────────────────────────────────
+  # iOS Build
+  # ──────────────────────────────────────────────
+  build-ios:
+    name: Build iOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Create IPA directory
+        run: mkdir -p build/ios/ipa
+
+      - name: Package IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r ../ipa/HospitalApp.ipa Payload/
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: build/ios/ipa/HospitalApp.ipa
+
+  # ──────────────────────────────────────────────
+  # Create GitHub Release
+  # ──────────────────────────────────────────────
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-android, build-ios]
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+          path: artifacts/
+
+      - name: Download AAB
+        uses: actions/download-artifact@v4
+        with:
+          name: android-aab
+          path: artifacts/
+
+      - name: Download IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: ios-ipa
+          path: artifacts/
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          CHANGELOG=$(git log $(git describe --tags --abbrev=0 HEAD^)..HEAD --oneline --no-merges | sed 's/^/- /')
+          echo "changelog<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGELOG" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          body: |
+            ## 📱 Hospital App ${{ github.ref_name }}
+
+            ### What's Changed
+            ${{ steps.changelog.outputs.changelog }}
+
+            ### Downloads
+            - **Android APK** — `app-release.apk` (direct install)
+            - **Android AAB** — `app-release.aab` (Google Play upload)
+            - **iOS IPA** — `HospitalApp.ipa` (requires signing)
+
+            ### Installation
+            **Android:**
+            1. Download `app-release.apk`
+            2. Enable "Install from unknown sources"
+            3. Open the APK to install
+
+            **iOS:**
+            1. Download `HospitalApp.ipa`
+            2. Use AltStore or similar to install
+            3. Or upload to TestFlight for distribution
+
+            ---
+            [📖 Documentation](https://github.com/zuhudo/hospital-app/wiki) | [🐛 Report Bug](https://github.com/zuhudo/hospital-app-mobile/issues)
+          files: |
+            artifacts/app-release.apk
+            artifacts/app-release.aab
+            artifacts/HospitalApp.ipa
+          draft: false
+          prerelease: false
